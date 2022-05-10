@@ -11,100 +11,128 @@
 
 #include <dune/local_integration_test/local_integration_test.hh>
 
-int main(int argc, char** argv)
-{
-  try{
-    
-    using Scalar = double;
-    constexpr size_t dim = 3;
-    constexpr size_t number_of_dofs = 4;
-    using Vector = Dune::FieldVector<Scalar, dim>;
-  
-    Scalar distance_dipole = 2.0;
-    Scalar edgeLength = 2.0;
-    Scalar distance_coil = 10.0;
-    size_t intorder_eeg = 5;
-    size_t intorder_meg_inaccurate = 3;
-    size_t intorder_meg_accurate = 50;
-  
-    // Maybe initialize MPI
-    Dune::MPIHelper& helper = Dune::MPIHelper::instance(argc, argv);
+#include <Python.h>
+#include <dune/python/pybind11/numpy.h>
+#include <dune/python/pybind11/operators.h>
+#include <dune/python/pybind11/pybind11.h>
+#include <dune/python/pybind11/stl.h>
 
-    // create mesh
-    Scalar csf_conductivity = 1.79; // S/m
-    Scalar grey_matter_conductivity = 0.33; // S/m
-    duneuro::SingleTetrahedronMesh<Scalar> mesh(edgeLength, csf_conductivity, grey_matter_conductivity);
-    mesh.bindDipole({distance_dipole * 0.793206996070584536, distance_dipole * -0.608210651451048467, distance_dipole * 0.030041052680805216}, 
-                    {-0.803530014579211693, 0.359998305533424823, -0.474068281667730462});
-    mesh.bindCoil({distance_coil * -0.513372253148087432, distance_coil * -0.858054442607775303, distance_coil * -0.013838468799547596});
-    
-    const auto& element = mesh.entity();
-    const auto& intersection = mesh.frontFacingIntersection();
-    
-    std::cout << " EEG : \n";
-    
-    //std::vector<Scalar> numericIntegrals = mesh.numericSurfaceIntegrals(intorder_eeg);
-    //std::vector<Scalar> analyticIntegrals = mesh.analyticSurfaceIntegrals();
-    
-    std::vector<Scalar> numericIntegrals = mesh.numericPatchIntegrals(intorder_eeg);
-    std::vector<Scalar> analyticIntegrals = mesh.analyticPatchIntegrals();
-    
-    std::cout << " Numeric integrals with intorder " << intorder_eeg << " : \n";
-    for(size_t i = 0; i < number_of_dofs; ++i) {
-      std::cout << numericIntegrals[i] << "\t";
-    }
-    
-    std::cout << "\n Analytic integrals : \n";
-    for(size_t i = 0; i < number_of_dofs; ++i) {
-      std::cout << analyticIntegrals[i] << "\t";
-    }
-    
-    Scalar norm_analytic(0.0);
-    Scalar norm_diff(0.0);
-    for(size_t i = 0; i < number_of_dofs; ++i) {
-      norm_diff += (numericIntegrals[i] - analyticIntegrals[i]) * (numericIntegrals[i] - analyticIntegrals[i]);
-      norm_analytic += analyticIntegrals[i] * analyticIntegrals[i];
-    }
-    norm_analytic = std::sqrt(norm_analytic);
-    norm_diff = std::sqrt(norm_diff);
-    Scalar relative_error = norm_diff / norm_analytic;
-    
-    std::cout << "\n Relativ error : " << relative_error << "\n";
-    
-    std::cout << "\n\n\n";
-    
-    std::cout << " MEG : \n";
-    //auto magnetic_field_inaccurate = mesh.numericSurfaceMagneticField(intorder_meg_inaccurate);
-    //auto magnetic_field_accurate = mesh.numericSurfaceMagneticField(intorder_meg_accurate);
-    
-    //auto magnetic_field_inaccurate = mesh.numericPatchMagneticField(intorder_meg_inaccurate);
-    //auto magnetic_field_accurate = mesh.numericPatchMagneticField(intorder_meg_accurate);
-    
-    auto magnetic_field_inaccurate = mesh.numericTransitionMagneticField(intorder_meg_inaccurate);
-    auto magnetic_field_accurate = mesh.numericTransitionMagneticField(intorder_meg_accurate);
-    
-    std::cout << " Inacurate field with intorder " << intorder_meg_inaccurate << ": \n" << magnetic_field_inaccurate << "\n";
-    std::cout << " Accurate field with intorder " << intorder_meg_accurate << ": \n" << magnetic_field_accurate << "\n"; 
-    
-    Scalar norm_accurate(0.0);
-    Scalar norm_meg_diff(0.0);
-    for(size_t i = 0; i < dim; ++i) {
-      norm_meg_diff += (magnetic_field_accurate[i] - magnetic_field_inaccurate[i]) * (magnetic_field_accurate[i] - magnetic_field_inaccurate[i]);
-      norm_accurate += magnetic_field_accurate[i] * magnetic_field_accurate[i];
-    }
-    norm_accurate = std::sqrt(norm_accurate);
-    norm_meg_diff = std::sqrt(norm_meg_diff);
-    Scalar relative_error_meg = norm_meg_diff / norm_accurate;
-    
-    std::cout << "\n Relativ error : " << relative_error_meg << "\n";
-    
-    std::cout << "\n The program didn't crash!\n";
-    return 0;
-  }
-  catch (Dune::Exception &e){
-    std::cerr << "Dune reported error: " << e << std::endl;
-  }
-  catch (...){
-    std::cerr << "Unknown exception thrown!" << std::endl;
-  }
+namespace py = pybind11;
+using Scalar = double;
+enum {dim = 3};
+using CoordinateType = Dune::FieldVector<Scalar, dim>;
+
+// this is a smaller version of the corresponding code in duneuro-py
+void register_coordinate_vector(py::module& m) {
+  py::class_<CoordinateType>(m, 
+                         "Coordinate", 
+                         "3-dimensional Vector containing the cartesian coordinates of a point",
+                         py::buffer_protocol())
+    .def_buffer([] (CoordinateType& vector) -> py::buffer_info {
+        return py::buffer_info(
+          &vector[0],                                        // pointer to buffer
+          sizeof(Scalar),                                    // size of one entry in bytes
+          py::format_descriptor<Scalar>::format(),           // python struct for data type
+          1,                                                 // number of dimensions
+          {dim},                                             // dimension sizes
+          {sizeof(Scalar)}                                   // stride sizes in bytes
+        ); // end buffer_info constructor
+      } // end lambda definition
+    ) // end def_buffer
+    .def(py::init<Scalar>(), "create Coordinate from scalar")
+    .def(py::init(
+      [](py::buffer buffer) {
+        // check buffer format  
+        py::buffer_info info = buffer.request();
+        if(info.format != py::format_descriptor<Scalar>::format()) {
+          DUNE_THROW(Dune::Exception, "buffer entries are of the wrong type");
+        }
+        if(info.ndim != 1) {
+          DUNE_THROW(Dune::Exception, "buffer has to consist of 1 dimension, but consists of " << info.ndim << " dimensions");
+        }
+        if(info.shape[0] != dim) {
+          DUNE_THROW(Dune::Exception, "buffer has to contain 3 entries, but contains " << info.shape[0] << " entries");
+        }
+        
+        Scalar* data_ptr = static_cast<Scalar*>(info.ptr);
+        return CoordinateType({data_ptr[0], data_ptr[1], data_ptr[2]});
+      }) // end definition of lambda
+      , "create Coordinate from Python buffer"
+    ) // end definition of py::init
+    .def(py::init(
+      [](const py::list& value_list) {
+
+        // validate list
+        if(value_list.size() != dim) {
+          DUNE_THROW(Dune::Exception, "list has to contain 3 entries, but contains" << value_list.size() << " entries");
+        }
+        // list validated
+        
+        // copy values to coordinate vector
+        CoordinateType coordinate;
+        std::transform(value_list.begin(), value_list.end(), coordinate.begin(), [] (const py::handle& handle) -> Scalar {return handle.cast<Scalar>();});
+        return coordinate;
+      }), // end definition of lambda
+      "create coordinate vector from list"
+    ) // end definition of py::init
+    .def("__len__", [] (const CoordinateType& coordinate) {return coordinate.size();})
+    .def("__getitem__",
+      [](const CoordinateType& coordinate, size_t index) {
+        return coordinate[index];
+      } // end definition of lambda
+    ) // end definition of __getitem__
+    .def("__setitem__",
+      [] (CoordinateType& coordinate, size_t index, Scalar value) {
+        coordinate[index] = value;
+      } // end definition of lambda
+    ) // end definition of __setitem_
+    .def("__str__",
+      [](const CoordinateType& coordinate) {
+        std::stringstream sstr;
+        sstr << " Coordinate with entries [" << coordinate[0] << ", " << coordinate[1] << ", " << coordinate[2] << "]";
+        return sstr.str();
+      } // end definition of lambda
+    ) // end definition of __str__
+    // bind arithmetic operations
+    .def(py::self += py::self)
+    .def(py::self -= py::self)
+    .def(py::self += Scalar())
+    .def(py::self -= Scalar())
+    .def(py::self *= Scalar())
+    .def(py::self /= Scalar())
+  ; // end definition of class
+} // end register_coordinate_vector
+
+void register_single_tetrahedron_mesh(py::module m)
+{
+  py::class_<duneuro::SingleTetrahedronMesh<Scalar>>(m, "SingleTetrahedronMesh", "class implementing the numerical and analytical integrals arising in the (localized) subtraction source model on a single tetrahedron and triangle")
+    .def(py::init<Scalar, Scalar, Scalar>(), "create a single tetrahedron by specifying its edge length, the conductivity on the element and the conductivity around the dipole position",
+                                            py::arg("edge_length") = 1.0, py::arg("conductivity_tetrahedron") = 1.79, py::arg("conductivity_dipole") = 0.33)
+    .def("bindDipole", &duneuro::SingleTetrahedronMesh<Scalar>::bindDipole, "bind dipole by specifying its position and moment")
+    .def("bindCoil", &duneuro::SingleTetrahedronMesh<Scalar>::bindDipole, "bind MEG coil by specifying its position")
+    .def("numericSurfaceIntegrals", &duneuro::SingleTetrahedronMesh<Scalar>::numericSurfaceIntegrals, "numerically compute patch boundary integral for EEG forward problem", 
+         py::arg("integration_order"))
+    .def("numericPatchIntegrals", &duneuro::SingleTetrahedronMesh<Scalar>::numericPatchIntegrals, "numerically compute patch integral for EEG forward problem", 
+         py::arg("integration_order"))
+    .def("numericSurfaceMagneticField", &duneuro::SingleTetrahedronMesh<Scalar>::numericSurfaceMagneticField, "numerically compute patch boundary integral for MEG postprocessing", 
+         py::arg("integration_order"))
+    .def("numericPatchMagneticField", &duneuro::SingleTetrahedronMesh<Scalar>::numericPatchMagneticField, "numerically compute patch integral for MEG postprocessing", 
+         py::arg("integration_order"))
+    .def("numericTransitionMagneticField", &duneuro::SingleTetrahedronMesh<Scalar>::numericTransitionMagneticField, "numerically compute transition integral for MEG postprocessing", 
+         py::arg("integration_order"))
+    .def("analyticSurfaceIntegrals", &duneuro::SingleTetrahedronMesh<Scalar>::analyticSurfaceIntegrals, "analytically compute patch boundary integral for EEG forward problem")
+    .def("analyticPatchIntegrals", &duneuro::SingleTetrahedronMesh<Scalar>::analyticPatchIntegrals, "analytically compute patch integral for EEG forward problem")
+    ; // end definition of class
+}
+
+///////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////
+// Create bindings
+///////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////
+PYBIND11_MODULE(singleTetrahedronPy, m) {
+  register_coordinate_vector(m);
+  py::implicitly_convertible<py::buffer, CoordinateType>();
+  py::implicitly_convertible<py::list, CoordinateType>();
+  register_single_tetrahedron_mesh(m);
 }
