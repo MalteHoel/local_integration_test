@@ -1,0 +1,1 @@
+add_subdirectory(local_integration_test)

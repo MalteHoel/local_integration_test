@@ -1,0 +1,2 @@
+add_executable("local_integration_test" local_integration_test.cc)
+target_link_dune_default_libraries("local_integration_test")
