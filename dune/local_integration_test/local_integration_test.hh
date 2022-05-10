@@ -155,6 +155,46 @@ namespace duneuro {
     return integrals;
   }
   
+  std::vector<Scalar> numericPatchIntegrals(size_t integration_order)
+  {
+    // create gradient of infinity potential with source at dipole_position_
+    UInfinityGradient grad_u_infinity(gridPtr_->leafGridView());
+    Tensor sigma_infinity_inverse(sigma_infinity_);
+    sigma_infinity_inverse.invert();
+    grad_u_infinity.set_parameters(dipole_moment_, dipole_position_, sigma_infinity_, sigma_infinity_inverse);
+    
+    Tensor sigma_corr = sigma_;
+    sigma_corr -= sigma_infinity_;
+    
+    const auto& quad_rule = Dune::QuadratureRules<Scalar, dim>::rule(entity_.type(), integration_order);
+    auto geometry = entity_.geometry();
+    std::vector<Dune::FieldMatrix<Scalar, 1, dim>> basis_jacobians;
+    
+    std::vector<Scalar> integrals(number_of_dofs, 0.0);
+    // perform numerical integration
+    for(const auto& quad_point : quad_rule) {
+      auto local_position = quad_point.position();
+      Vector global_position = geometry.global(local_position);
+      Scalar integration_factor = geometry.integrationElement(local_position) * quad_point.weight();
+      
+      Vector vec;
+      grad_u_infinity.evaluateGlobal(global_position, vec);
+      Vector sigma_corr_grad_u_infinity;
+      sigma_corr.mv(vec, sigma_corr_grad_u_infinity);
+      
+      fem_.localBasis().evaluateJacobian(local_position, basis_jacobians);
+      
+      Tensor jacobian_inverse_transposed = geometry.jacobianInverseTransposed(local_position);
+      Vector help;
+      for(size_t i = 0; i < fem_.size(); ++i) {
+        jacobian_inverse_transposed.mv(basis_jacobians[i][0], help);
+        integrals[dof_to_vertex_indices_[i]] += integration_factor * (sigma_corr_grad_u_infinity * help);
+      }
+    } // end loop over quadrature points
+    
+    return integrals;
+  }
+  
   std::vector<Scalar> analyticSurfaceIntegrals()
   {
     AnalyticTriangle<Scalar> triangle(corners_, frontIntersectionIndices_);
@@ -167,6 +207,46 @@ namespace duneuro {
     }
     
     return surface_integrals;
+  }
+  
+  std::vector<Scalar> analyticPatchIntegrals()
+  {
+    auto geometry = entity_.geometry();
+    auto local_coords_dummy = referenceElement(geometry).position(0, 0);
+    Tensor sigma_corr = sigma_;
+    sigma_corr -= sigma_infinity_;
+  
+    // get gradients of local basis functions
+    std::vector<Dune::FieldMatrix<Scalar, 1, dim>> basis_jacobians(number_of_dofs);
+    Dune::FieldMatrix<Scalar, dim, number_of_dofs> lhs_matrix;
+    fem_.localBasis().evaluateJacobian(local_coords_dummy, basis_jacobians);
+    for(size_t i = 0; i < dim; ++i) {
+      for(size_t j = 0; j < number_of_dofs; ++j) {
+        lhs_matrix[i][j] = basis_jacobians[j][0][i];
+      }
+    }
+      
+    lhs_matrix.leftmultiply(geometry.jacobianInverseTransposed(local_coords_dummy));
+    lhs_matrix.leftmultiply(sigma_corr);
+    lhs_matrix *= 1.0 / (4.0 * Dune::StandardMathematicalConstants<Scalar>::pi() * sigma_infinity_[0][0]);
+    
+    Vector rhs(0.0);
+    for(const auto& intersection : Dune::intersections(gridPtr_->leafGridView(), entity_)) {
+      Vector outerNormal = intersection.centerUnitOuterNormal();
+      duneuro::AnalyticTriangle<Scalar> triangle(intersection.geometry().corner(0), intersection.geometry().corner(1), intersection.geometry().corner(2));
+      triangle.bind(dipole_position_, dipole_moment_);
+      rhs += triangle.patchFactor() * outerNormal;
+    }
+    
+    Dune::FieldVector<Scalar, number_of_dofs> integrals(0.0);
+    lhs_matrix.umtv(rhs, integrals);
+    
+    std::vector<Scalar> integral_vector(number_of_dofs);
+    for(size_t i = 0; i < number_of_dofs; ++i) {
+      integral_vector[dof_to_vertex_indices_[i]] = integrals[i];
+    }
+    
+    return integral_vector;
   }
   
   // compute integral sigma_infinity * u_infinity * (eta x (coil - x) / ||coil - x||^3) over triangle
@@ -243,6 +323,9 @@ namespace duneuro {
     return magnetic_field;
   }
   
+  // compute integral (sigma grad(chi u_infinity)) x ((coil - x) / ||coil - x||^3) over the tetrahedron
+  // we assume the front facing intersection to be contained in the patch, meaning that chi is 1 on nodes
+  // 0, 1, 2 and 0 on node 3.
   Vector numericTransitionMagneticField(size_t integration_order)
   {
     // create u_infinity and grad_u_infinity with source at dipole_position_

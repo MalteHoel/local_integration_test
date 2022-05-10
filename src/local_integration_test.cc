@@ -20,8 +20,8 @@ int main(int argc, char** argv)
     constexpr size_t number_of_dofs = 4;
     using Vector = Dune::FieldVector<Scalar, dim>;
   
-    Scalar distance_dipole = 4.0;
-    Scalar edgeLength = 1.0;
+    Scalar distance_dipole = 2.0;
+    Scalar edgeLength = 2.0;
     Scalar distance_coil = 10.0;
     size_t intorder_eeg = 5;
     size_t intorder_meg_inaccurate = 3;
@@ -43,13 +43,17 @@ int main(int argc, char** argv)
     
     std::cout << " EEG : \n";
     
-    std::vector<Scalar> numericIntegrals = mesh.numericSurfaceIntegrals(intorder_eeg);
+    //std::vector<Scalar> numericIntegrals = mesh.numericSurfaceIntegrals(intorder_eeg);
+    //std::vector<Scalar> analyticIntegrals = mesh.analyticSurfaceIntegrals();
+    
+    std::vector<Scalar> numericIntegrals = mesh.numericPatchIntegrals(intorder_eeg);
+    std::vector<Scalar> analyticIntegrals = mesh.analyticPatchIntegrals();
+    
     std::cout << " Numeric integrals with intorder " << intorder_eeg << " : \n";
     for(size_t i = 0; i < number_of_dofs; ++i) {
       std::cout << numericIntegrals[i] << "\t";
     }
     
-    std::vector<Scalar> analyticIntegrals = mesh.analyticSurfaceIntegrals();
     std::cout << "\n Analytic integrals : \n";
     for(size_t i = 0; i < number_of_dofs; ++i) {
       std::cout << analyticIntegrals[i] << "\t";
