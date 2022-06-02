@@ -1,3 +1,3 @@
-add_library("singleTetrahedronPy" SHARED local_integration_test.cc)
-target_link_libraries(singleTetrahedronPy ${PYTHON_LIBRARIES})
-set_target_properties(singleTetrahedronPy PROPERTIES PREFIX "")
+add_library("singleElementPy" SHARED local_integration_test.cc)
+target_link_libraries(singleElementPy ${PYTHON_LIBRARIES})
+set_target_properties(singleElementPy PROPERTIES PREFIX "")

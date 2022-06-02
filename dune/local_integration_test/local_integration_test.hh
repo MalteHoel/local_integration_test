@@ -14,17 +14,82 @@
 
 #include <duneuro/eeg/subtraction_dg_uinfty.hh>
 #include <duneuro/eeg/analytic_utilities.hh>
+#include <duneuro/common/flags.hh>
 
 namespace duneuro {
 
-  template <class Scalar>
-  class SingleTetrahedronMesh {
-  public:
-    // typedefs
+  struct SingleElementMeshTraits {
     enum {dim = 3};
+    using Grid = Dune::UGGrid<dim>;
+    using Factory = Dune::GridFactory<Grid>;
+    using Scalar = double;
+    enum {ansatzfunction_degree = 1};
+  };
+
+  template<ElementType elementType>
+  struct ElementTypeSpecificTraits;
+
+  template<>
+  struct ElementTypeSpecificTraits<ElementType::tetrahedron> {
+    using FiniteElement = Dune::LagrangeSimplexLocalFiniteElement<SingleElementMeshTraits::Scalar,
+                                                                  SingleElementMeshTraits::Scalar,
+                                                                  SingleElementMeshTraits::dim,
+                                                                  SingleElementMeshTraits::ansatzfunction_degree>;
     enum {number_of_dofs = 4};
     enum {number_of_facet_corners = 3};
-    using Grid = Dune::UGGrid<dim>;
+  };
+
+  template<>
+  struct ElementTypeSpecificTraits<ElementType::hexahedron> {
+    using FiniteElement = Dune::LagrangeCubeLocalFiniteElement<SingleElementMeshTraits::Scalar,
+                                                               SingleElementMeshTraits::Scalar,
+                                                               SingleElementMeshTraits::dim,
+                                                               SingleElementMeshTraits::ansatzfunction_degree>;
+    enum {number_of_dofs = 8};
+    enum {number_of_facet_corners = 4};
+  };
+
+  template<ElementType elementType>
+  void insertSingleElement(SingleElementMeshTraits::Factory&, SingleElementMeshTraits::Scalar);
+
+  template<>
+  void insertSingleElement<ElementType::tetrahedron>(SingleElementMeshTraits::Factory& factory, SingleElementMeshTraits::Scalar edgeLength) {
+    factory.insertVertex({0.0                                 ,   - edgeLength / 2.0, (- std::sqrt(3) / 6.0) * edgeLength});
+    factory.insertVertex({0.0                                 ,     edgeLength / 2.0, (- std::sqrt(3) / 6.0) * edgeLength});
+    factory.insertVertex({0.0                                 ,     0.0              , (  std::sqrt(3) / 3.0) * edgeLength});
+    factory.insertVertex({(- std::sqrt(6) / 3.0) * edgeLength,     0.0              ,    0.0});
+
+    factory.insertElement(Dune::GeometryTypes::simplex(SingleElementMeshTraits::dim), {0, 1, 2, 3});
+    factory.insertBoundarySegment({0, 1, 2});
+    return;
+  }
+
+  template<>
+  void insertSingleElement<ElementType::hexahedron>(SingleElementMeshTraits::Factory& factory, SingleElementMeshTraits::Scalar edgeLength) {
+    factory.insertVertex({-1.0 * edgeLength, -0.5 * edgeLength, -0.5 * edgeLength});
+    factory.insertVertex({ 0.0 * edgeLength, -0.5 * edgeLength, -0.5 * edgeLength});
+    factory.insertVertex({-1.0 * edgeLength,  0.5 * edgeLength, -0.5 * edgeLength});
+    factory.insertVertex({ 0.0 * edgeLength,  0.5 * edgeLength, -0.5 * edgeLength});
+    factory.insertVertex({-1.0 * edgeLength, -0.5 * edgeLength,  0.5 * edgeLength});
+    factory.insertVertex({ 0.0 * edgeLength, -0.5 * edgeLength,  0.5 * edgeLength});
+    factory.insertVertex({-1.0 * edgeLength,  0.5 * edgeLength,  0.5 * edgeLength});
+    factory.insertVertex({ 0.0 * edgeLength,  0.5 * edgeLength,  0.5 * edgeLength});
+
+    factory.insertElement(Dune::GeometryTypes::cube(SingleElementMeshTraits::dim), {0, 1, 2, 3, 4, 5, 6, 7});
+    factory.insertBoundarySegment({1, 3, 5, 7});
+  }
+
+  template <ElementType elementType>
+  class SingleElementMesh {
+  public:
+    // typedefs
+    using Scalar = double;
+    enum {dim = SingleElementMeshTraits::dim};
+    using Traits = ElementTypeSpecificTraits<elementType>;
+    enum {number_of_dofs = Traits::number_of_dofs};
+    enum {number_of_facet_corners = Traits::number_of_facet_corners};
+    using Grid = typename SingleElementMeshTraits::Grid;
+    using Factory = typename SingleElementMeshTraits::Factory;
     using GridView = typename Grid::LeafGridView;
     using Entity = typename GridView::template Codim<0>::Entity;
     using Intersection = typename GridView::Intersection;
@@ -32,11 +97,11 @@ namespace duneuro {
     using UInfinityGradient = InfinityPotentialGradient<GridView, Scalar>;
     using Vector = Dune::FieldVector<Scalar, dim>;
     enum {degree = 1};
-    using FiniteElement = Dune::LagrangeSimplexLocalFiniteElement<Scalar, Scalar, dim, degree>;
+    using FiniteElement = typename Traits::FiniteElement;
     using Tensor = Dune::FieldMatrix<Scalar, dim, dim>;
     
   
-    SingleTetrahedronMesh(Scalar edgeLength, Scalar sigma, Scalar sigma_infinity)
+    SingleElementMesh(Scalar edgeLength, Scalar sigma, Scalar sigma_infinity)
       : edgeLength_(edgeLength)
       , sigma_(0.0)
       , sigma_infinity_(0.0)
@@ -44,7 +109,6 @@ namespace duneuro {
       , dof_to_vertex_indices_(number_of_dofs)
       , vertex_to_dof_indices_(number_of_dofs)
       , frontIntersectionIndices_(number_of_facet_corners)
-      , indexOfOuterVertex_(-1)
       , fem_()
       , corners_(number_of_dofs)
       , frontFacingNormal_(0.0)
@@ -53,16 +117,8 @@ namespace duneuro {
       , coil_position_({2.0 * edgeLength, 2 * edgeLength, 0.0})
     {
       // create grid
-      Dune::GridFactory<Grid> factory;
-      
-      factory.insertVertex({0.0                                 ,   - edgeLength_ / 2.0, (- std::sqrt(3) / 6.0) * edgeLength_});
-      factory.insertVertex({0.0                                 ,     edgeLength_ / 2.0, (- std::sqrt(3) / 6.0) * edgeLength_});
-      factory.insertVertex({0.0                                 ,     0.0              , (  std::sqrt(3) / 3.0) * edgeLength_});
-      factory.insertVertex({(- std::sqrt(6) / 3.0) * edgeLength_,     0.0              ,    0.0});
-      
-      factory.insertElement(Dune::GeometryTypes::simplex(dim), {0, 1, 2, 3});
-      factory.insertBoundarySegment({0, 1, 2});
-      
+      Factory factory;
+      insertSingleElement<elementType>(factory, edgeLength_);
       gridPtr_ = factory.createGrid();
       
       // get element
@@ -91,20 +147,8 @@ namespace duneuro {
       }
       
       // extract corner indices belonging to front facing intersection
-      auto triangle_corner_iterator = Dune::referenceElement(entity_.geometry()).subEntities(intersection_.indexInInside(), 1, 3);
-      std::copy(triangle_corner_iterator.begin(), triangle_corner_iterator.end(), frontIntersectionIndices_.begin());
-      
-      // get index of corner not contained inside the front facing intersection
-      for(size_t i = 0; i < number_of_dofs; ++i) {
-        auto found = std::find(frontIntersectionIndices_.begin(), frontIntersectionIndices_.end(), i);
-        if(found != frontIntersectionIndices_.end()) {
-          continue;
-        }
-        else {
-          indexOfOuterVertex_ = i;
-          break;
-        }
-      }
+      auto front_intersection_corner_iterator = Dune::referenceElement(entity_.geometry()).subEntities(intersection_.indexInInside(), 1, dim);
+      std::copy(front_intersection_corner_iterator.begin(), front_intersection_corner_iterator.end(), frontIntersectionIndices_.begin());
       
       frontFacingNormal_ = intersection_.centerUnitOuterNormal();
     }
@@ -409,7 +453,6 @@ namespace duneuro {
     std::vector<int> dof_to_vertex_indices_;
     std::vector<int> vertex_to_dof_indices_;
     std::vector<int> frontIntersectionIndices_;
-    int indexOfOuterVertex_;
     FiniteElement fem_;
     std::vector<Vector> corners_;
     Vector frontFacingNormal_;
