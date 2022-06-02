@@ -109,7 +109,7 @@ void register_single_tetrahedron_mesh(py::module m)
     .def(py::init<Scalar, Scalar, Scalar>(), "create a single tetrahedron by specifying its edge length, the conductivity on the element and the conductivity around the dipole position",
                                             py::arg("edge_length") = 1.0, py::arg("conductivity_tetrahedron") = 1.79, py::arg("conductivity_dipole") = 0.33)
     .def("bindDipole", &duneuro::SingleTetrahedronMesh<Scalar>::bindDipole, "bind dipole by specifying its position and moment")
-    .def("bindCoil", &duneuro::SingleTetrahedronMesh<Scalar>::bindDipole, "bind MEG coil by specifying its position")
+    .def("bindCoil", &duneuro::SingleTetrahedronMesh<Scalar>::bindCoil, "bind MEG coil by specifying its position")
     .def("numericSurfaceIntegrals", &duneuro::SingleTetrahedronMesh<Scalar>::numericSurfaceIntegrals, "numerically compute patch boundary integral for EEG forward problem", 
          py::arg("integration_order"))
     .def("numericPatchIntegrals", &duneuro::SingleTetrahedronMesh<Scalar>::numericPatchIntegrals, "numerically compute patch integral for EEG forward problem", 
