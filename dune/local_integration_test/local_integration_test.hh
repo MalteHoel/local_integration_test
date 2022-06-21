@@ -5,6 +5,7 @@
 #include <cmath>
 #include <memory>
 #include <algorithm>
+#include <type_traits>
 
 #include <dune/geometry/type.hh>
 #include <dune/grid/uggrid.hh>
@@ -164,6 +165,33 @@ namespace duneuro {
     coil_position_ = coil_position;
   }
   
+  // we choose chi as the finite element ansatz function that is 1 on the front facing intersection and zero on the remaining vertices
+  Scalar chi_local(const Vector& local_position) const
+  {
+    Scalar chi_val = 0.0;
+    std::vector<Dune::FieldVector<Scalar, 1>> basis_vals;
+    fem_.localBasis().evaluateFunction(local_position, basis_vals);
+    for(const auto& index : frontIntersectionIndices_) {
+      chi_val += basis_vals[index][0];
+    }
+
+    return chi_val;
+  }
+
+  // we choose chi as the finite element ansatz function that is 1 on the front facing intersection and zero on the remaining vertices
+  Vector grad_chi_local(const Vector& local_position) const
+  {
+    Vector grad_chi_val(0.0);
+    std::vector<Dune::FieldMatrix<Scalar, 1, dim>> basis_jacobians;
+    fem_.localBasis().evaluateJacobian(local_position, basis_jacobians);
+    for(const auto& index : frontIntersectionIndices_) {
+      Vector gradient_ansatzfunction;
+      entity_.geometry().jacobianInverseTransposed(local_position).mv(basis_jacobians[index][0], gradient_ansatzfunction);
+      grad_chi_val += gradient_ansatzfunction;
+    }
+    return grad_chi_val;
+  }
+
   std::vector<Scalar> numericSurfaceIntegrals(size_t integration_order)
   {
     // create gradient of infinity potential with source at dipole_position_
@@ -239,7 +267,54 @@ namespace duneuro {
     return integrals;
   }
   
-  std::vector<Scalar> analyticSurfaceIntegrals()
+  std::vector<Scalar> numericTransitionIntegrals(size_t integration_order)
+  {
+    UInfinity u_infinity(gridPtr_->leafGridView());
+    UInfinityGradient grad_u_infinity(gridPtr_->leafGridView());
+    Tensor sigma_infinity_inverse(sigma_infinity_);
+    sigma_infinity_inverse.invert();
+    u_infinity.set_parameters(dipole_moment_, dipole_position_, sigma_infinity_, sigma_infinity_inverse);
+    grad_u_infinity.set_parameters(dipole_moment_, dipole_position_, sigma_infinity_, sigma_infinity_inverse);
+
+    const auto& quad_rule = Dune::QuadratureRules<Scalar, dim>::rule(entity_.type(), integration_order);
+    auto geometry = entity_.geometry();
+    std::vector<Dune::FieldMatrix<Scalar, 1, dim>> basis_jacobians;
+
+    std::vector<Scalar> integrals(number_of_dofs, 0.0);
+    for(const auto& quad_point : quad_rule) {
+      auto local_position = quad_point.position();
+      Vector global_position = geometry.global(local_position);
+      Scalar integration_factor = geometry.integrationElement(local_position) * quad_point.weight();
+
+      // compute sigma_grad_chi_u_infinity
+      Scalar chi = chi_local(local_position);
+      Vector grad_chi = grad_chi_local(local_position);
+
+      Dune::FieldVector<Scalar, 1> u_infinity_vec;
+      u_infinity.evaluateGlobal(global_position, u_infinity_vec);
+      Scalar u_infinity_val = u_infinity_vec[0];
+
+      Vector grad_u_infinity_vec;
+      grad_u_infinity.evaluateGlobal(global_position, grad_u_infinity_vec);
+
+      Vector factor = u_infinity_val * grad_chi + chi * grad_u_infinity_vec;
+      Vector sigma_grad_chi_u_infinity;
+      sigma_.mv(factor, sigma_grad_chi_u_infinity);
+
+      fem_.localBasis().evaluateJacobian(local_position, basis_jacobians);
+      Tensor jacobian_inverse_transposed = geometry.jacobianInverseTransposed(local_position);
+      Vector grad_phi;
+      for(size_t i = 0; i < fem_.size(); ++i) {
+        jacobian_inverse_transposed.mv(basis_jacobians[i][0], grad_phi);
+        integrals[dof_to_vertex_indices_[i]] += integration_factor * (sigma_grad_chi_u_infinity * grad_phi);
+      }
+    }
+
+    return integrals;
+  }
+
+  template<ElementType elemType>
+  std::enable_if_t<elemType == elementType && elemType == ElementType::tetrahedron, std::vector<Scalar>> analyticSurfaceIntegrals()
   {
     AnalyticTriangle<Scalar> triangle(corners_, frontIntersectionIndices_);
     triangle.bind(dipole_position_, dipole_moment_);
@@ -253,7 +328,8 @@ namespace duneuro {
     return surface_integrals;
   }
   
-  std::vector<Scalar> analyticPatchIntegrals()
+  template<ElementType elemType>
+  std::enable_if_t<elemType == elementType && elemType == ElementType::tetrahedron, std::vector<Scalar>> analyticPatchIntegrals()
   {
     auto geometry = entity_.geometry();
     auto local_coords_dummy = referenceElement(geometry).position(0, 0);
@@ -293,6 +369,55 @@ namespace duneuro {
     return integral_vector;
   }
   
+  template<ElementType elemType>
+  std::enable_if_t<elemType == elementType && elemType == ElementType::tetrahedron, std::vector<Scalar>> analyticTransitionIntegrals()
+  {
+    auto geometry = entity_.geometry();
+    const auto& ref_element = referenceElement(geometry);
+    auto local_coords_dummy = ref_element.position(0, 0);
+
+    // get gradients of local basis functions
+    std::vector<Dune::FieldMatrix<Scalar, 1, dim>> gradphi(number_of_dofs);
+    Dune::FieldMatrix<Scalar, dim, number_of_dofs> lhs_matrix;
+    fem_.localBasis().evaluateJacobian(local_coords_dummy, gradphi);
+    for(size_t i = 0; i < dim; ++i) {
+      for(size_t j = 0; j < number_of_dofs; ++j) {
+        lhs_matrix[i][j] = gradphi[j][0][i];
+      }
+    }
+
+    // compute matrix factor
+    lhs_matrix.leftmultiply(geometry.jacobianInverseTransposed(local_coords_dummy));
+    lhs_matrix.leftmultiply(sigma_);
+    lhs_matrix *= 1.0 / (4.0 * Dune::StandardMathematicalConstants<Scalar>::pi() * sigma_infinity_[0][0]);
+
+    // get local description of chi
+    std::vector<Scalar> chi_local_expansion(number_of_dofs, 0.0);
+    for(const auto& vertex_index : frontIntersectionIndices_) {
+      chi_local_expansion[vertex_index] = 1.0;
+    }
+
+    // iterate over all facets and compute transition factors
+    Vector rhs(0.0);
+    for(const auto& intersection : Dune::intersections(gridPtr_->leafGridView(), entity_)) {
+      Vector outerNormal = intersection.centerUnitOuterNormal();
+      auto corner_index_iterator = ref_element.subEntities(intersection.indexInInside(), 1, 3);
+      duneuro::AnalyticTriangle<Scalar> triangle(corners_, corner_index_iterator);
+      triangle.bind(dipole_position_, dipole_moment_);
+      rhs += triangle.transitionFactor(chi_local_expansion, corner_index_iterator) * outerNormal;
+    }
+
+    Dune::FieldVector<Scalar, number_of_dofs> integrals(0.0);
+    lhs_matrix.umtv(rhs, integrals);
+
+    std::vector<Scalar> integral_vector(number_of_dofs);
+    for(size_t i = 0; i < number_of_dofs; ++i) {
+      integral_vector[dof_to_vertex_indices_[i]] = integrals[i];
+    }
+
+    return integral_vector;
+  }
+
   // compute integral sigma_infinity * u_infinity * (eta x (coil - x) / ||coil - x||^3) over triangle
   Vector numericSurfaceMagneticField(size_t integration_order)
   {
@@ -393,13 +518,8 @@ namespace duneuro {
       Scalar integration_factor = geometry.integrationElement(local_position) * quad_point.weight();
       
       // compute lhs
-      fem_.localBasis().evaluateJacobian(local_position, basis_jacobians);
-      auto basis_jacobians_sum = basis_jacobians[0] + basis_jacobians[1] + basis_jacobians[2];
-      Vector grad_chi;
-      geometry.jacobianInverseTransposed(local_position).mv(basis_jacobians_sum[0], grad_chi);
-      
-      fem_.localBasis().evaluateFunction(local_position, basis_vals);
-      Scalar chi = basis_vals[0][0] + basis_vals[1][0] + basis_vals[2][0];
+      Vector grad_chi = grad_chi_local(local_position);
+      Scalar chi = chi_local(local_position);
       
       Dune::FieldVector<Scalar, 1> u_infinity_vec;
       u_infinity.evaluateGlobal(global_position, u_infinity_vec);

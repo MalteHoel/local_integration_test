@@ -115,14 +115,17 @@ void register_single_element_meshes(py::module m)
          py::arg("integration_order"))
     .def("numericPatchIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::numericPatchIntegrals, "numerically compute patch integral for EEG forward problem",
          py::arg("integration_order"))
+    .def("numericTransitionIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::numericTransitionIntegrals, "numerically compute transition integral for EEG forward problem",
+         py::arg("integration_order"))
     .def("numericSurfaceMagneticField", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::numericSurfaceMagneticField, "numerically compute patch boundary integral for MEG postprocessing",
          py::arg("integration_order"))
     .def("numericPatchMagneticField", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::numericPatchMagneticField, "numerically compute patch integral for MEG postprocessing",
          py::arg("integration_order"))
     .def("numericTransitionMagneticField", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::numericTransitionMagneticField, "numerically compute transition integral for MEG postprocessing",
          py::arg("integration_order"))
-    .def("analyticSurfaceIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::analyticSurfaceIntegrals, "analytically compute patch boundary integral for EEG forward problem")
-    .def("analyticPatchIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::analyticPatchIntegrals, "analytically compute patch integral for EEG forward problem")
+    .def("analyticSurfaceIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::template analyticSurfaceIntegrals<duneuro::ElementType::tetrahedron>, "analytically compute patch boundary integral for EEG forward problem")
+    .def("analyticPatchIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::template analyticPatchIntegrals<duneuro::ElementType::tetrahedron>, "analytically compute patch integral for EEG forward problem")
+    .def("analyticTransitionIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::tetrahedron>::template analyticTransitionIntegrals<duneuro::ElementType::tetrahedron>, "analytically compute patch integral for EEG forward problem")
     ; // end definition of class
 
   // single hexahedron mesh
@@ -134,6 +137,8 @@ void register_single_element_meshes(py::module m)
     .def("numericSurfaceIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::hexahedron>::numericSurfaceIntegrals, "numerically compute patch boundary integral for EEG forward problem",
          py::arg("integration_order"))
     .def("numericPatchIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::hexahedron>::numericPatchIntegrals, "numerically compute patch integral for EEG forward problem",
+         py::arg("integration_order"))
+    .def("numericTransitionIntegrals", &duneuro::SingleElementMesh<duneuro::ElementType::hexahedron>::numericTransitionIntegrals, "numerically compute transition integral for EEG forward problem",
          py::arg("integration_order"))
     .def("numericSurfaceMagneticField", &duneuro::SingleElementMesh<duneuro::ElementType::hexahedron>::numericSurfaceMagneticField, "numerically compute patch boundary integral for MEG postprocessing",
          py::arg("integration_order"))
